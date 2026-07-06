@@ -1,5 +1,5 @@
 import React from 'react';
-import { ExternalLink, CheckCircle, XCircle, Clock, Loader2, AlertCircle, Copy, Check } from 'lucide-react';
+import { ExternalLink, CheckCircle, XCircle, Clock, Loader2, Copy, Check, FileText, UserCheck } from 'lucide-react';
 
 const CopyHashButton: React.FC<{ hash: string }> = ({ hash }) => {
   const [copied, setCopied] = React.useState(false);
@@ -33,41 +33,70 @@ const CopyHashButton: React.FC<{ hash: string }> = ({ hash }) => {
   );
 };
 
-export interface PaymentStatus {
-  recipient: string;
-  amount: string;
-  status: 'idle' | 'pending' | 'success' | 'failed';
+export interface ContractCallStatus {
+  status: 'idle' | 'pending' | 'submitted' | 'success' | 'failed';
   txHash?: string;
   error?: string;
 }
 
+export interface ParticipantSplitStatus {
+  recipient: string;
+  amount: string;
+  paymentStatus: 'idle' | 'pending' | 'submitted' | 'success' | 'failed';
+  paymentTxHash?: string;
+  paymentError?: string;
+  markPaidStatus: 'idle' | 'pending' | 'submitted' | 'success' | 'failed';
+  markPaidTxHash?: string;
+  markPaidError?: string;
+  onChainPaid: boolean;
+}
+
 interface TransactionProgressProps {
-  payments: PaymentStatus[];
-  isSending?: boolean;
+  billId: string;
+  createSplit: ContractCallStatus;
+  participants: ParticipantSplitStatus[];
+  isSending: boolean;
   onReset: () => void;
 }
 
 export const TransactionProgress: React.FC<TransactionProgressProps> = ({
-  payments,
+  billId,
+  createSplit,
+  participants,
+  isSending,
   onReset,
 }) => {
-  const total = payments.length;
-  const completed = payments.filter((p) => p.status === 'success' || p.status === 'failed').length;
-  const succeededCount = payments.filter((p) => p.status === 'success').length;
-  const failedCount = payments.filter((p) => p.status === 'failed').length;
-  const isFinished = completed === total && total > 0;
-
   const shortenAddress = (addr: string) => {
     return `${addr.slice(0, 8)}...${addr.slice(-8)}`;
   };
 
-  const getStatusBadge = (payment: PaymentStatus) => {
-    switch (payment.status) {
+  // Operations progress calculation
+  // Total ops = 1 (create_split) + 2 * recipients.length (XLM payment + mark_paid)
+  const totalOps = 1 + 2 * participants.length;
+  let completedOps = 0;
+  
+  if (createSplit.status === 'success' || createSplit.status === 'failed') completedOps++;
+  participants.forEach(p => {
+    if (p.paymentStatus === 'success' || p.paymentStatus === 'failed') completedOps++;
+    if (p.markPaidStatus === 'success' || p.markPaidStatus === 'failed') completedOps++;
+  });
+
+  const isFinished = completedOps === totalOps && !isSending;
+
+  const getStatusBadge = (status: 'idle' | 'pending' | 'submitted' | 'success' | 'failed') => {
+    switch (status) {
       case 'pending':
         return (
           <span className="pulse-badge status-pending" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
             <Loader2 size={12} className="spinner" />
-            <span>Pending</span>
+            <span>Approve...</span>
+          </span>
+        );
+      case 'submitted':
+        return (
+          <span className="pulse-badge status-pending" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', background: 'rgba(59, 130, 246, 0.15)', color: '#93c5fd', borderColor: 'rgba(59, 130, 246, 0.3)' }}>
+            <Loader2 size={12} className="spinner" />
+            <span>Mining...</span>
           </span>
         );
       case 'success':
@@ -98,23 +127,28 @@ export const TransactionProgress: React.FC<TransactionProgressProps> = ({
   return (
     <div className="card">
       <div style={{ marginBottom: '1.5rem' }}>
-        <h2 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-display)', fontWeight: 700, marginBottom: '0.5rem' }}>
-          {isFinished ? 'Split Payments Completed' : 'Processing Split Payments'}
-        </h2>
+        <div className="flex justify-between items-center" style={{ marginBottom: '0.5rem' }}>
+          <h2 style={{ fontSize: '1.4rem', fontFamily: 'var(--font-display)', fontWeight: 800 }}>
+            On-Chain Bill Splitting Process
+          </h2>
+          <span style={{ fontSize: '0.8rem', background: 'rgba(255,255,255,0.05)', padding: '0.25rem 0.50rem', borderRadius: '0.375rem', color: 'var(--text-secondary)' }}>
+            ID: <strong style={{ color: 'var(--primary)' }}>{billId}</strong>
+          </span>
+        </div>
         
-        {/* Progress bar */}
-        {total > 0 && !isFinished && (
-          <div style={{ marginTop: '1rem' }}>
+        {/* Overall Progress bar */}
+        {!isFinished && (
+          <div style={{ marginTop: '1rem', marginBottom: '1rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
-              <span>Sending payments...</span>
-              <span>{completed} of {total} processed</span>
+              <span>Executing split payment flow steps...</span>
+              <span>{completedOps} of {totalOps} steps complete</span>
             </div>
             <div style={{ width: '100%', height: '6px', background: 'rgba(255,255,255,0.05)', borderRadius: '3px', overflow: 'hidden' }}>
               <div 
                 style={{ 
                   height: '100%', 
                   background: 'linear-gradient(90deg, var(--primary), var(--secondary))', 
-                  width: `${(completed / total) * 100}%`,
+                  width: `${(completedOps / totalOps) * 100}%`,
                   transition: 'width 0.4s ease'
                 }}
               ></div>
@@ -123,93 +157,135 @@ export const TransactionProgress: React.FC<TransactionProgressProps> = ({
         )}
       </div>
 
-      {/* Overall Summary at the end */}
-      {isFinished && (
-        <div style={{ 
-          background: failedCount > 0 ? 'rgba(239, 68, 68, 0.05)' : 'rgba(16, 185, 129, 0.05)', 
-          border: `1px solid ${failedCount > 0 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)'}`,
-          padding: '1.25rem', 
-          borderRadius: '0.75rem', 
-          marginBottom: '1.5rem',
-          textAlign: 'left'
-        }}>
-          <div className="flex items-center gap-2" style={{ fontWeight: 700, fontSize: '1.05rem', color: failedCount > 0 ? '#fca5a5' : '#a7f3d0', marginBottom: '0.5rem' }}>
-            {failedCount > 0 ? <AlertCircle size={20} /> : <CheckCircle size={20} />}
-            <span>{failedCount > 0 ? 'Split Complete with Failures' : 'All Split Payments Sent!'}</span>
+      {/* Contract registry setup step */}
+      <div style={{ 
+        background: 'rgba(255, 255, 255, 0.02)', 
+        border: '1px solid var(--border-muted)', 
+        padding: '1.25rem', 
+        borderRadius: '0.75rem', 
+        marginBottom: '1.5rem',
+        textAlign: 'left'
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div className="flex items-center gap-2" style={{ fontWeight: 700, fontSize: '1rem', color: 'white' }}>
+            <FileText size={18} style={{ color: 'var(--primary)' }} />
+            <span>1. Create Split Registry On-Chain</span>
           </div>
-          <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-            We processed {total} transactions:
-          </p>
-          <div className="flex gap-4 mt-4" style={{ marginTop: '0.5rem' }}>
-            <span className="pulse-badge status-success" style={{ padding: '0.35rem 0.75rem', fontWeight: 600 }}>
-              {succeededCount} Succeeded
-            </span>
-            {failedCount > 0 && (
-              <span className="pulse-badge status-error" style={{ padding: '0.35rem 0.75rem', fontWeight: 600 }}>
-                {failedCount} Failed
-              </span>
-            )}
-          </div>
+          <div>{getStatusBadge(createSplit.status)}</div>
         </div>
-      )}
+        <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+          Calls <code>create_split(bill_id, total_amount, participants)</code> on the Soroban smart contract.
+        </div>
+        {createSplit.txHash && (
+          <div style={{ display: 'flex', alignItems: 'center', marginTop: '0.5rem', fontSize: '0.85rem' }}>
+            <span style={{ color: 'var(--text-muted)' }}>Transaction:</span>
+            <a
+              href={`https://stellar.expert/explorer/testnet/tx/${createSplit.txHash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="link-explorer"
+              style={{ marginLeft: '0.5rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+            >
+              <span>{createSplit.txHash.slice(0, 12)}...{createSplit.txHash.slice(-12)}</span>
+              <ExternalLink size={12} />
+            </a>
+            <CopyHashButton hash={createSplit.txHash} />
+          </div>
+        )}
+        {createSplit.error && (
+          <div style={{ color: 'var(--error)', fontSize: '0.8rem', marginTop: '0.5rem', wordBreak: 'break-all' }}>
+            Error: {createSplit.error}
+          </div>
+        )}
+      </div>
 
-      {/* Transactions Details Table */}
+      {/* Recipients detail section */}
       <div className="table-container" style={{ margin: '1.5rem 0' }}>
         <table className="summary-table">
           <thead>
             <tr>
               <th>Recipient</th>
               <th style={{ textAlign: 'right' }}>Amount</th>
-              <th>Status</th>
-              <th>Details</th>
+              <th>XLM Payment</th>
+              <th>On-Chain Status</th>
+              <th>Registry Status</th>
             </tr>
           </thead>
           <tbody>
-            {payments.map((payment, index) => (
-              <tr key={index} style={{ background: payment.status === 'pending' ? 'rgba(139, 92, 246, 0.03)' : 'transparent' }}>
+            {participants.map((participant, index) => (
+              <tr key={index} style={{ background: (participant.paymentStatus === 'pending' || participant.markPaidStatus === 'pending') ? 'rgba(139, 92, 246, 0.03)' : 'transparent' }}>
                 <td>
                   <div className="flex flex-col">
                     <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                      Recipient #{index + 1}
+                      #{index + 1}
                     </span>
                     <span className="address-badge" style={{ marginTop: '0.25rem', alignSelf: 'flex-start' }}>
-                      {shortenAddress(payment.recipient)}
+                      {shortenAddress(participant.recipient)}
                     </span>
                   </div>
                 </td>
                 <td style={{ textAlign: 'right', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
-                  {payment.amount} XLM
+                  {participant.amount} XLM
                 </td>
+                {/* XLM Payment transaction status */}
                 <td>
-                  {getStatusBadge(payment)}
-                </td>
-                <td>
-                  {payment.status === 'success' && payment.txHash && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                  <div className="flex flex-col gap-1">
+                    {getStatusBadge(participant.paymentStatus)}
+                    {participant.paymentTxHash && (
                       <a
-                        href={`https://stellar.expert/explorer/testnet/tx/${payment.txHash}`}
+                        href={`https://stellar.expert/explorer/testnet/tx/${participant.paymentTxHash}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="link-explorer"
-                        style={{ fontSize: '0.85rem' }}
+                        style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}
                       >
-                        <span>Explorer</span>
-                        <ExternalLink size={12} />
+                        <span>Tx Link</span>
+                        <ExternalLink size={10} />
                       </a>
-                      <CopyHashButton hash={payment.txHash} />
-                    </div>
+                    )}
+                    {participant.paymentError && (
+                      <span style={{ color: 'var(--error)', fontSize: '0.75rem', maxWidth: '120px', wordBreak: 'break-all' }}>
+                        {participant.paymentError}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                {/* On chain paid state synced in real time */}
+                <td>
+                  {participant.onChainPaid ? (
+                    <span className="pulse-badge status-success" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <UserCheck size={12} />
+                      <span>Paid ✅</span>
+                    </span>
+                  ) : (
+                    <span className="pulse-badge status-pending" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <Loader2 size={12} className="spinner" />
+                      <span>Pending</span>
+                    </span>
                   )}
-                  {payment.status === 'failed' && payment.error && (
-                    <div style={{ color: 'var(--error)', fontSize: '0.8rem', maxWidth: '180px', wordBreak: 'break-word', lineHeight: '1.2' }}>
-                      {payment.error}
-                    </div>
-                  )}
-                  {payment.status === 'idle' && (
-                    <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Waiting...</span>
-                  )}
-                  {payment.status === 'pending' && (
-                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Submitting...</span>
-                  )}
+                </td>
+                {/* Mark Paid Registry contract status */}
+                <td>
+                  <div className="flex flex-col gap-1">
+                    {getStatusBadge(participant.markPaidStatus)}
+                    {participant.markPaidTxHash && (
+                      <a
+                        href={`https://stellar.expert/explorer/testnet/tx/${participant.markPaidTxHash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="link-explorer"
+                        style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}
+                      >
+                        <span>Tx Link</span>
+                        <ExternalLink size={10} />
+                      </a>
+                    )}
+                    {participant.markPaidError && (
+                      <span style={{ color: 'var(--error)', fontSize: '0.75rem', maxWidth: '120px', wordBreak: 'break-all' }}>
+                        {participant.markPaidError}
+                      </span>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -217,7 +293,27 @@ export const TransactionProgress: React.FC<TransactionProgressProps> = ({
         </table>
       </div>
 
+      {/* Done summary */}
       {isFinished && (
+        <div style={{ 
+          background: 'rgba(16, 185, 129, 0.05)', 
+          border: '1px solid rgba(16, 185, 129, 0.15)',
+          padding: '1.25rem', 
+          borderRadius: '0.75rem', 
+          marginBottom: '1.5rem',
+          textAlign: 'left'
+        }}>
+          <div className="flex items-center gap-2" style={{ fontWeight: 700, fontSize: '1.05rem', color: '#a7f3d0', marginBottom: '0.5rem' }}>
+            <CheckCircle size={20} />
+            <span>Bill Split Registry & Payments Complete!</span>
+          </div>
+          <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+            The bill was successfully recorded on-chain, all payments were routed, and all recipients are registry-marked as Paid.
+          </p>
+        </div>
+      )}
+
+      {(!isSending || isFinished) && (
         <button
           onClick={onReset}
           className="btn btn-secondary w-full"

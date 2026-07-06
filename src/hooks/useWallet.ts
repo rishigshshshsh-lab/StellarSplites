@@ -1,9 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import {
-  checkFreighterInstalled,
-  connectFreighter,
-  fetchXlmBalance,
-} from '../lib/stellar';
+import { fetchXlmBalance } from '../lib/stellar';
+import { StellarWalletsKit } from '@creit.tech/stellar-wallets-kit';
 
 export interface WalletState {
   address: string | null;
@@ -15,34 +12,35 @@ export interface WalletState {
 }
 
 const formatWalletError = (err: any): string => {
-  const msg = err?.message || '';
-  if (msg.includes('User reject') || msg.includes('rejected') || msg.includes('User declined')) {
-    return 'Connection request rejected. Please approve the connection request in Freighter to continue.';
+  const msg = (err?.message || err?.toString() || '').toLowerCase();
+  
+  // Error Type 1: Wallet not found / not installed
+  if (msg.includes('install') || msg.includes('not found') || msg.includes('not installed') || msg.includes('does not exist')) {
+    return 'The selected wallet extension is not installed or not available. Please install the extension to continue.';
   }
-  if (msg.includes('not funded') || msg.includes('404')) {
-    return 'Account is not funded on Testnet. Please fund it using Friendbot (link below) before connecting.';
+  
+  // Error Type 2: Transaction rejected by user in the wallet popup
+  if (msg.includes('reject') || msg.includes('cancel') || msg.includes('decline') || msg.includes('user closed')) {
+    return 'The connection request or transaction was rejected in your wallet popup.';
   }
-  return msg || 'An unknown error occurred while connecting Freighter.';
+  
+  // Error Type 3: Insufficient balance
+  if (msg.includes('insufficient') || msg.includes('underfunded') || msg.includes('404')) {
+    return 'Insufficient balance to cover the split payment and network fees. Please fund your account via Friendbot.';
+  }
+  
+  return err?.message || 'An unknown error occurred while connecting your wallet.';
 };
 
 export const useWallet = () => {
   const [state, setState] = useState<WalletState>({
     address: null,
     balance: null,
-    isInstalled: null,
+    isInstalled: true, // We assume wallet extensions are available, kit will detect them in the modal
     loadingBalance: false,
     isConnecting: false,
     error: null,
   });
-
-  // Check if Freighter is installed on mount
-  useEffect(() => {
-    const checkInstallation = async () => {
-      const installed = await checkFreighterInstalled();
-      setState((prev) => ({ ...prev, isInstalled: installed }));
-    };
-    checkInstallation();
-  }, []);
 
   // Check connection status from localStorage on mount (persistence)
   useEffect(() => {
@@ -70,23 +68,22 @@ export const useWallet = () => {
         ...prev,
         balance: null,
         loadingBalance: false,
-        error: err.message || 'Failed to fetch balance.',
+        error: formatWalletError(err),
       }));
     }
   }, []);
 
-  // Connect wallet
+  // Connect wallet using StellarWalletsKit modal
   const connect = useCallback(async () => {
     setState((prev) => ({ ...prev, isConnecting: true, error: null }));
     try {
-      // 1. Check install status first
-      const installed = await checkFreighterInstalled();
-      if (!installed) {
-        throw new Error('Freighter is not installed. Please install the extension first.');
+      // Show the multi-wallet choice modal (Freighter, Albedo, Lobstr, xBull)
+      const { address: walletAddress } = await StellarWalletsKit.authModal();
+      
+      if (!walletAddress) {
+        throw new Error('No address returned from the selected wallet.');
       }
 
-      // 2. Request address
-      const walletAddress = await connectFreighter();
       localStorage.setItem('connected_stellar_address', walletAddress);
       
       setState((prev) => ({
@@ -96,9 +93,14 @@ export const useWallet = () => {
         isInstalled: true,
       }));
 
-      // 3. Fetch balance
+      // Fetch balance
       await fetchBalance(walletAddress);
     } catch (err: any) {
+      // If user closed the modal, we silently reset isConnecting without showing a noisy error
+      if (err.message && err.message.includes('closed')) {
+        setState((prev) => ({ ...prev, isConnecting: false }));
+        return;
+      }
       setState((prev) => ({
         ...prev,
         isConnecting: false,
@@ -108,7 +110,12 @@ export const useWallet = () => {
   }, [fetchBalance]);
 
   // Disconnect wallet
-  const disconnect = useCallback(() => {
+  const disconnect = useCallback(async () => {
+    try {
+      await StellarWalletsKit.disconnect();
+    } catch (err) {
+      console.error('disconnect error:', err);
+    }
     localStorage.removeItem('connected_stellar_address');
     setState((prev) => ({
       ...prev,

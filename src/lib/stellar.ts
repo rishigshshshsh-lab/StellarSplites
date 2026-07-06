@@ -6,66 +6,30 @@ if (typeof window !== 'undefined') {
   (window as any).global = (window as any).global || window;
 }
 
-import { Horizon, TransactionBuilder, Operation, Asset, StrKey } from '@stellar/stellar-sdk';
-import { isConnected, requestAccess, signTransaction } from '@stellar/freighter-api';
+import { Horizon, rpc, TransactionBuilder, Operation, Asset, StrKey, Contract, nativeToScVal, scValToNative, Account } from '@stellar/stellar-sdk';
+import { StellarWalletsKit, Networks } from '@creit.tech/stellar-wallets-kit';
+import { defaultModules } from '@creit.tech/stellar-wallets-kit/modules/utils';
 
 const HORIZON_URL = 'https://horizon-testnet.stellar.org';
 export const server = new Horizon.Server(HORIZON_URL);
 
+// Soroban RPC server for Testnet
+const SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
+export const rpcServer = new rpc.Server(SOROBAN_RPC_URL);
+
+// Deployed Smart Contract ID on Testnet
+export const CONTRACT_ID = 'CBUWAF5KWSTDVIGR2SW4KX5KQ44ESSLHFIQTZM5N4HYHHMZ7RF7IVBM4';
+
 // Configure network passphrase for Testnet
 export const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
 
-/**
- * Checks if the Freighter extension is installed.
- */
-export const checkFreighterInstalled = async (): Promise<boolean> => {
-  try {
-    const res = await isConnected();
-    return !!(res && res.isConnected);
-  } catch (err) {
-    console.error('Error checking Freighter installation:', err);
-    return false;
-  }
-};
-
-/**
- * Requests wallet access and returns the public key (address).
- */
-export const connectFreighter = async (): Promise<string> => {
-  try {
-    const res = await requestAccess();
-    
-    // Support object returned from requestAccess()
-    if (res && 'error' in res && res.error) {
-      throw new Error(res.error || 'Failed to request access to Freighter.');
-    }
-    
-    const address = res && 'address' in res ? res.address : (res as any);
-    if (!address) {
-      throw new Error('No address returned from Freighter.');
-    }
-    return address;
-  } catch (err: any) {
-    throw new Error(err.message || 'Freighter connection failed.');
-  }
-};
-
-/**
- * Fetches XLM balance for the given address from Horizon Testnet.
- */
-export const fetchXlmBalance = async (address: string): Promise<string> => {
-  try {
-    const account = await server.loadAccount(address);
-    const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
-    return nativeBalance ? nativeBalance.balance : '0.0000000';
-  } catch (err: any) {
-    // If the account is not found, Horizon returns 404
-    if (err.response && err.response.status === 404) {
-      throw new Error('Account not funded. Please fund this account via Friendbot to use it on the Testnet.');
-    }
-    throw new Error(err.message || 'Failed to fetch balance from Horizon.');
-  }
-};
+// Initialize StellarWalletsKit once globally
+if (typeof window !== 'undefined') {
+  StellarWalletsKit.init({
+    modules: defaultModules(),
+    network: Networks.TESTNET,
+  });
+}
 
 /**
  * Validates if the given string is a valid Stellar public key (ED25519).
@@ -79,66 +43,186 @@ export const isValidPublicKey = (address: string): boolean => {
 };
 
 /**
- * Sequentially builds and submits a payment transaction.
- * Pre-loads the sender account to get the freshest sequence number.
+ * Fetches XLM balance for the given address from Horizon Testnet.
+ */
+export const fetchXlmBalance = async (address: string): Promise<string> => {
+  try {
+    const account = await server.loadAccount(address);
+    const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
+    return nativeBalance ? nativeBalance.balance : '0.0000000';
+  } catch (err: any) {
+    if (err.response && err.response.status === 404) {
+      throw new Error('Account not funded. Please fund this account via Friendbot to use it on the Testnet.');
+    }
+    throw new Error(err.message || 'Failed to fetch balance from Horizon.');
+  }
+};
+
+/**
+ * Sends a native XLM payment transaction with detailed status callback.
  */
 export const sendPayment = async (
   sender: string,
   recipient: string,
-  amount: string
+  amount: string,
+  statusCallback?: (status: 'pending' | 'submitted' | 'success' | 'failed', txHash?: string, error?: string) => void
 ): Promise<string> => {
-  // 1. Fetch latest account state for the correct sequence number
-  const account = await server.loadAccount(sender);
-
-  // 2. Fetch standard base fee from Horizon or use default fallback (100 stroops = 0.00001 XLM)
-  let baseFee = 100;
+  if (statusCallback) statusCallback('pending');
   try {
-    baseFee = await server.fetchBaseFee();
-  } catch (e) {
-    console.warn('Failed to fetch base fee, defaulting to 100 stroops', e);
+    // 1. Fetch latest account state
+    const account = await server.loadAccount(sender);
+
+    // 2. Fetch base fee
+    let baseFee = 100;
+    try {
+      baseFee = await server.fetchBaseFee();
+    } catch (e) {
+      console.warn('Failed to fetch base fee, defaulting to 100 stroops', e);
+    }
+
+    // 3. Build payment transaction
+    const transaction = new TransactionBuilder(account, {
+      fee: baseFee.toString(),
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(
+        Operation.payment({
+          destination: recipient,
+          asset: Asset.native(),
+          amount: amount,
+        })
+      )
+      .setTimeout(180)
+      .build();
+
+    const transactionXdr = transaction.toXDR();
+
+    // 4. Request wallet signature via StellarWalletsKit
+    const signResult = await StellarWalletsKit.signTransaction(transactionXdr, {
+      networkPassphrase: NETWORK_PASSPHRASE,
+      address: sender,
+    });
+
+    if (statusCallback) statusCallback('submitted');
+
+    // 5. Submit transaction to Horizon
+    const transactionToSubmit = TransactionBuilder.fromXDR(signResult.signedTxXdr, NETWORK_PASSPHRASE);
+    const submitResult = await server.submitTransaction(transactionToSubmit);
+
+    if (statusCallback) statusCallback('success', submitResult.hash);
+    return submitResult.hash;
+  } catch (err: any) {
+    console.error('sendPayment error:', err);
+    const errMsg = err.message || err.toString() || 'Transaction failed.';
+    if (statusCallback) statusCallback('failed', undefined, errMsg);
+    throw err;
   }
+};
 
-  // 3. Build payment transaction
-  const transaction = new TransactionBuilder(account, {
-    fee: baseFee.toString(),
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(
-      Operation.payment({
-        destination: recipient,
-        asset: Asset.native(),
-        amount: amount,
-      })
-    )
-    .setTimeout(180) // 3 minutes validity window
-    .build();
+/**
+ * Executes a Soroban Smart Contract call (like create_split or mark_paid)
+ * with complete footprint preparation, wallet signature, and transaction status polling.
+ */
+export const executeContractCall = async (
+  sender: string,
+  method: string,
+  args: any[],
+  statusCallback?: (status: 'pending' | 'submitted' | 'success' | 'failed', txHash?: string, error?: string) => void
+): Promise<string> => {
+  if (statusCallback) statusCallback('pending');
+  try {
+    // 1. Load sender account
+    const account = await server.loadAccount(sender);
+    const contract = new Contract(CONTRACT_ID);
 
-  const transactionXdr = transaction.toXDR();
+    // 2. Build initial transaction
+    let tx = new TransactionBuilder(account, {
+      fee: '100', // Will be auto-adjusted during prepareTransaction
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call(method, ...args))
+      .setTimeout(180)
+      .build();
 
-  // 4. Request signature from Freighter
-  const signResult = await signTransaction(transactionXdr, {
-    networkPassphrase: NETWORK_PASSPHRASE,
-    address: sender,
-  });
+    // 3. Prepare transaction (simulates it to fetch footprints, gas fees, etc.)
+    try {
+      tx = await rpcServer.prepareTransaction(tx);
+    } catch (simErr: any) {
+      console.error('Simulation/Preparation failed:', simErr);
+      throw new Error(simErr.message || 'Simulation of contract invocation failed.');
+    }
 
-  if (signResult && 'error' in signResult && signResult.error) {
-    throw new Error(signResult.error || 'Transaction signing rejected or failed.');
+    // 4. Request signature from the wallet
+    const signResult = await StellarWalletsKit.signTransaction(tx.toXDR(), {
+      networkPassphrase: NETWORK_PASSPHRASE,
+      address: sender,
+    });
+
+    if (statusCallback) statusCallback('submitted');
+
+    // 5. Submit signed transaction to Soroban RPC
+    const signedTx = TransactionBuilder.fromXDR(signResult.signedTxXdr, NETWORK_PASSPHRASE);
+    const response = await rpcServer.sendTransaction(signedTx);
+    
+    if (response.status === 'ERROR') {
+      const errMsg = response.errorResult?.toXDR('base64') || 'Transaction submission failed.';
+      throw new Error(errMsg);
+    }
+
+    const txHash = response.hash;
+    if (statusCallback) statusCallback('submitted', txHash);
+
+    // 6. Poll getTransaction until it is either SUCCESS or FAILED
+    let attempts = 0;
+    while (attempts < 30) {
+      const txStatus = await rpcServer.getTransaction(txHash);
+      if (txStatus.status === 'SUCCESS') {
+        if (statusCallback) statusCallback('success', txHash);
+        return txHash;
+      } else if (txStatus.status === 'FAILED') {
+        const errMsg = txStatus.resultXdr?.toString() || 'Transaction execution failed.';
+        throw new Error(errMsg);
+      }
+      // Wait 1.5 seconds between poll attempts
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      attempts++;
+    }
+
+    throw new Error('Transaction execution timed out while waiting for ledger inclusion.');
+  } catch (err: any) {
+    console.error(`executeContractCall (${method}) failed:`, err);
+    const errMsg = err.message || err.toString() || 'Contract invocation failed.';
+    if (statusCallback) statusCallback('failed', undefined, errMsg);
+    throw err;
   }
+};
 
-  let signedXdr = '';
-  if (typeof signResult === 'string') {
-    signedXdr = signResult;
-  } else if (signResult && typeof signResult === 'object') {
-    signedXdr = signResult.signedTxXdr;
+/**
+ * Fetches the split status for a given bill ID from the contract.
+ * Uses simulation (read-only call) so no user signature is required.
+ */
+export const getSplitStatusOnChain = async (
+  billId: string
+): Promise<any> => {
+  try {
+    const dummyAccount = new Account('GBXBZYRUXADVOOB5TIBNDHMCH7TAUEEUDJDV5WLOBWIZMUVFBXHXQ76N', '0');
+    const contract = new Contract(CONTRACT_ID);
+    
+    const tx = new TransactionBuilder(dummyAccount, {
+      fee: '100',
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call('get_split_status', nativeToScVal(billId)))
+      .setTimeout(30)
+      .build();
+
+    const sim = await rpcServer.simulateTransaction(tx);
+    if (rpc.Api.isSimulationSuccess(sim) && sim.result) {
+      return scValToNative(sim.result.retval);
+    }
+    return null;
+  } catch (err) {
+    console.error('getSplitStatusOnChain error:', err);
+    return null;
   }
-
-  if (!signedXdr) {
-    throw new Error('Freighter did not return a signed transaction.');
-  }
-
-  // 5. Submit signed transaction to Horizon Testnet
-  const transactionToSubmit = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
-  const submitResult = await server.submitTransaction(transactionToSubmit);
-
-  return submitResult.hash;
 };

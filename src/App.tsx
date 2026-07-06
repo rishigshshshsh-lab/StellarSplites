@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useWallet } from './hooks/useWallet';
 import { Header } from './components/Header';
 import { WalletWarning } from './components/WalletWarning';
 import { BalanceCard } from './components/BalanceCard';
 import { SplitForm } from './components/SplitForm';
 import { TransactionProgress } from './components/TransactionProgress';
-import type { PaymentStatus } from './components/TransactionProgress';
-import { sendPayment } from './lib/stellar';
+import type { ContractCallStatus, ParticipantSplitStatus } from './components/TransactionProgress';
+import { sendPayment, executeContractCall, getSplitStatusOnChain } from './lib/stellar';
+import { Address, nativeToScVal } from '@stellar/stellar-sdk';
 
 function App() {
   const {
@@ -22,63 +23,161 @@ function App() {
   } = useWallet();
 
   const [isSending, setIsSending] = useState(false);
-  const [payments, setPayments] = useState<PaymentStatus[]>([]);
+  const [billId, setBillId] = useState<string>('');
+  const [createSplit, setCreateSplit] = useState<ContractCallStatus>({ status: 'idle' });
+  const [participants, setParticipants] = useState<ParticipantSplitStatus[]>([]);
   const [showProgress, setShowProgress] = useState(false);
+
+  // Keep a reference to the active polling interval to clear it on unmount or reset
+  const pollIntervalRef = useRef<any>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  }, []);
 
   const handleSendPayments = async (recipients: string[], shareAmount: string) => {
     if (!address) return;
 
-    // Initialize payment statuses
-    const initialPayments: PaymentStatus[] = recipients.map((recipient) => ({
+    // Generate a unique bill ID for this session
+    const generatedBillId = `bill-${Date.now()}`;
+    setBillId(generatedBillId);
+
+    // Calculate total amount in stroops (Stellar base units, 7 decimals)
+    const totalAmount = parseFloat(shareAmount) * recipients.length;
+    const totalStroops = BigInt(Math.round(totalAmount * 10000000));
+
+    // Initialize state
+    setCreateSplit({ status: 'idle' });
+    const initialParticipants: ParticipantSplitStatus[] = recipients.map((recipient) => ({
       recipient,
       amount: shareAmount,
-      status: 'idle',
+      paymentStatus: 'idle',
+      markPaidStatus: 'idle',
+      onChainPaid: false,
     }));
-
-    setPayments(initialPayments);
+    setParticipants(initialParticipants);
     setShowProgress(true);
     setIsSending(true);
 
-    // Sequentially send payment to each recipient
-    for (let i = 0; i < recipients.length; i++) {
-      const recipient = recipients[i];
-      
-      // Update state to pending for current index
-      setPayments((prev) =>
-        prev.map((p, idx) => (idx === i ? { ...p, status: 'pending' } : p))
+    try {
+      // 1. Create split on-chain via smart contract invocation
+      await executeContractCall(
+        address,
+        'create_split',
+        [
+          nativeToScVal(generatedBillId),
+          nativeToScVal(totalStroops, { type: 'u64' }),
+          nativeToScVal(recipients.map(p => Address.fromString(p))),
+        ],
+        (status, txHash, errorMsg) => {
+          setCreateSplit({ status, txHash, error: errorMsg });
+        }
       );
 
-      try {
-        // Send transaction
-        const txHash = await sendPayment(address, recipient, shareAmount);
-        
-        // Update state to success
-        setPayments((prev) =>
-          prev.map((p, idx) =>
-            idx === i ? { ...p, status: 'success', txHash } : p
-          )
-        );
-      } catch (err: any) {
-        console.error(`Failed to send to ${recipient}:`, err);
-        const errMsg = err.message || 'Transaction failed.';
-        
-        // Update state to failed
-        setPayments((prev) =>
-          prev.map((p, idx) =>
-            idx === i ? { ...p, status: 'failed', error: errMsg } : p
-          )
+      // Start real-time contract status polling to check when registry changes to Paid ✅
+      pollIntervalRef.current = setInterval(async () => {
+        const onChainStatus = await getSplitStatusOnChain(generatedBillId);
+        if (onChainStatus && onChainStatus.participants) {
+          setParticipants((prev) =>
+            prev.map((p) => {
+              const match = onChainStatus.participants.find(
+                (sp: any) => sp.address === p.recipient
+              );
+              return match ? { ...p, onChainPaid: match.paid } : p;
+            })
+          );
+        }
+      }, 3000);
+
+      // 2. Loop through recipients sequentially to execute XLM payment & mark paid
+      for (let i = 0; i < recipients.length; i++) {
+        const recipient = recipients[i];
+
+        // Process XLM Payment
+        let paymentSuccess = false;
+        try {
+          await sendPayment(address, recipient, shareAmount, (status, txHash, errorMsg) => {
+            setParticipants((prev) =>
+              prev.map((p, idx) =>
+                idx === i
+                  ? { ...p, paymentStatus: status, paymentTxHash: txHash, paymentError: errorMsg }
+                  : p
+              )
+            );
+          });
+          paymentSuccess = true;
+        } catch (paymentErr) {
+          console.error(`XLM Payment to ${recipient} failed:`, paymentErr);
+        }
+
+        // If payment was successful, mark the participant as paid in the contract
+        if (paymentSuccess) {
+          try {
+            await executeContractCall(
+              address,
+              'mark_paid',
+              [
+                nativeToScVal(generatedBillId),
+                nativeToScVal(Address.fromString(recipient)),
+              ],
+              (status, txHash, errorMsg) => {
+                setParticipants((prev) =>
+                  prev.map((p, idx) =>
+                    idx === i
+                      ? { ...p, markPaidStatus: status, markPaidTxHash: txHash, markPaidError: errorMsg }
+                      : p
+                  )
+                );
+              }
+            );
+          } catch (contractErr) {
+            console.error(`Marking paid on-chain failed for ${recipient}:`, contractErr);
+          }
+        }
+
+        // Refresh sender balance to keep state synced
+        await refreshBalance();
+      }
+
+    } catch (flowErr) {
+      console.error('Split flow failed at initialization:', flowErr);
+    } finally {
+      // Clear background polling interval once flow completes
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+
+      // Do a final fetch of the on-chain status to ensure complete sync
+      const finalStatus = await getSplitStatusOnChain(generatedBillId);
+      if (finalStatus && finalStatus.participants) {
+        setParticipants((prev) =>
+          prev.map((p) => {
+            const match = finalStatus.participants.find(
+              (sp: any) => sp.address === p.recipient
+            );
+            return match ? { ...p, onChainPaid: match.paid } : p;
+          })
         );
       }
 
-      // Refresh sender balance after each transaction to reflect correct current status
+      setIsSending(false);
       await refreshBalance();
     }
-
-    setIsSending(false);
   };
 
   const handleReset = () => {
-    setPayments([]);
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+    setBillId('');
+    setCreateSplit({ status: 'idle' });
+    setParticipants([]);
     setShowProgress(false);
     setIsSending(false);
     refreshBalance();
@@ -99,13 +198,15 @@ function App() {
         <div className="hero">
           <h1>Split Bills, Instantly</h1>
           <p>
-            Split expenses and send transactions to multiple recipients sequentially on the Stellar Testnet. Simple, fast, and secure.
+            Split expenses and send payments to multiple recipients on the Stellar Testnet, backed by a Soroban smart contract registry.
           </p>
         </div>
 
         {showProgress ? (
           <TransactionProgress
-            payments={payments}
+            billId={billId}
+            createSplit={createSplit}
+            participants={participants}
             isSending={isSending}
             onReset={handleReset}
           />
