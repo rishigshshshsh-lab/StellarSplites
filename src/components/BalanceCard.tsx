@@ -90,11 +90,14 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
                 target="_blank"
                 rel="noopener noreferrer"
                 className="link-explorer"
-                style={{ fontSize: '0.85rem', fontWeight: 600, color: '#fca5a5' }}
+                style={{ fontSize: '0.85rem', fontWeight: 600, color: '#fca5a5', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
               >
                 <span>Fund Account with Friendbot</span>
                 <ExternalLink size={12} />
               </a>
+              <p style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.4)', marginTop: '0.35rem', lineHeight: '1.4' }}>
+                Friendbot is a Testnet funding tool that immediately credits your account with 10,000 test XLM so you can perform splits.
+              </p>
             </div>
           </div>
         </div>
