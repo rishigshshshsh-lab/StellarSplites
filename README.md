@@ -123,44 +123,40 @@ Verifies UI stability and react state logic in `src/tests/split.test.tsx`:
 
 ---
 
-## 🔗 Verifiable Transactions
+## 🔗 Orange Belt Submission Checklist Requirements
 
-### Verifiable Contract Call:
-- **Transaction Hash**: [`5d188c3aa7470a09a9801219b5238eba5d7b75aad05507faad4672bf7b756ba52`](https://stellar.expert/explorer/testnet/tx/5d188c3aa7470a09a9801219b5238eba5d7b75aad05507faad4672bf7b756ba52)
+### 1. Live Demo & Video
+- **Live Deployed Frontend (Vercel/Netlify)**: [PASTE_YOUR_LIVE_LINK_HERE](#)
+- **Demo Walkthrough Video (1-2 mins)**: [PASTE_YOUR_VIDEO_LINK_HERE](#)
 
-### Verifiable Payment Receipts:
-- **Receipt 1 (Payment 1)**: [`c11c8400251c22e71db69071924186e99aa30b7843a4c1e92994c5a367acd84c`](https://stellar.expert/explorer/testnet/tx/c11c8400251c22e71db69071924186e99aa30b7843a4c1e92994c5a367acd84c)
-- **Receipt 2 (Payment 2)**: [`d714ea3ed3a8b1b1ae8ca1bb68e75e7b5970c09d5aca615745bf37159c08e8fa`](https://stellar.expert/explorer/testnet/tx/d714ea3ed3a8b1b1ae8ca1bb68e75e7b5970c09d5aca615745bf37159c08e8fa)
+### 2. Smart Contract Addresses
+- **SplitBillRegistry Contract Address**: `PASTE_REGISTRY_CONTRACT_ADDRESS_HERE`
+- **SplitNotifier Contract Address**: `PASTE_NOTIFIER_CONTRACT_ADDRESS_HERE`
 
----
-
-## 🌐 Live Demo & Screencast
-
-- **Live Deployed Frontend**: [StellarSplit Live](https://stellarsplit-orange.vercel.app)
-- **Demo Walkthrough Video**: [StellarSplit Orange Belt Demo](https://youtu.be/dummy-orange-belt)
+### 3. Verifiable Transactions (Stellar.expert)
+- **Contract Call Transaction Hash**: [PASTE_TX_HASH_HERE](#)
+- **Payment Receipt Hash (Optional)**: [PASTE_TX_HASH_HERE](#)
 
 ---
 
-## 📸 Screenshots
+## 📸 Screenshots (Add Yours Below)
 
-1. **Mobile Responsive View (Stacked Table Layout)**:
+1. **Mobile Responsive UI**:
+   <!-- PASTE SCREENSHOT HERE -->
    ![Mobile responsive view](./image-1.png)
 
-2. **CI Pipeline Passing on GitHub**:
+2. **CI/CD Pipeline Running (Passing)**:
+   <!-- PASTE SCREENSHOT HERE -->
    ![CI Pipeline Passing](./image-2.png)
 
-3. **cargo test Output (7 contract tests passing)**:
+3. **Test Output (3+ passing tests)**:
+   <!-- PASTE SCREENSHOT HERE -->
    ![cargo test output](./image-3.png)
 
-4. **Wallet Selection Modal**:
-   ![Wallet Selection Modal](./image-4.png)
-
-5. **On-Chain Process Monitor**:
-   ![On-Chain Process Monitor](./image-5.png)
-
-6. **Successful On-Chain Bill Splitting Process Complete**:
+4. **Successful On-Chain Bill Splitting Process Complete**:
+   <!-- PASTE SCREENSHOT HERE -->
    ![Successful On-Chain Bill Splitting Process Complete](./image-7.png)
 
-7. **Stellar.expert Contract Call Verification**:
+5. **Stellar.expert Contract Call Verification**:
+   <!-- PASTE SCREENSHOT HERE -->
    ![Stellar.expert Contract Call Verification](./image-6.png)
-
